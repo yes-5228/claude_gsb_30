@@ -7,8 +7,16 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import DomainError, NotFoundError
 from app.models import Inspection, Restroom
-from app.schemas.inspection import InspectionCreate, InspectionOut, InspectionUpdate
-from app.services import restroom_service, scoring
+from app.schemas.inspection import (
+    InspectionCreate,
+    InspectionOut,
+    InspectionSyncSummary,
+    InspectionUpdate,
+)
+from app.services import inspection_sync, restroom_service, scoring
+
+VALID_UPDATE_ISSUE_MODES = {"adjust", "keep", "void"}
+VALID_DELETE_ISSUE_MODES = {"void", "delete", "unlink"}
 
 SORTABLE_FIELDS = {
     "inspect_time": Inspection.inspect_time,
@@ -44,9 +52,17 @@ def get_inspection(db: Session, inspection_id: int) -> Inspection:
     return inspection
 
 
-def to_out(inspection: Inspection) -> InspectionOut:
+def to_out(
+    inspection: Inspection, sync_summary: InspectionSyncSummary | dict | None = None
+) -> InspectionOut:
     data = InspectionOut.model_validate(inspection)
-    data.issue_count = len(inspection.issues)
+    data.issue_count = sum(1 for issue in inspection.issues if not issue.voided)
+    if sync_summary is not None:
+        data.issue_sync = (
+            sync_summary
+            if isinstance(sync_summary, InspectionSyncSummary)
+            else InspectionSyncSummary(**sync_summary)
+        )
     return data
 
 
@@ -122,13 +138,34 @@ def create_inspection(db: Session, payload: InspectionCreate) -> Inspection:
     return inspection
 
 
-def update_inspection(db: Session, inspection_id: int, payload: InspectionUpdate) -> Inspection:
+def update_inspection(
+    db: Session,
+    inspection_id: int,
+    payload: InspectionUpdate,
+    *,
+    issue_mode: str = "adjust",
+) -> tuple[Inspection, dict | None]:
+    """更新巡查记录。
+
+    当检查项打分发生变化时，按 ``issue_mode`` 联动处理当次巡查登记的问题：
+    adjust（默认）按新评分逐项对账（保留调整/作废/新增），keep 保持原问题不动，
+    void 整批评为作废。巡查写入与问题联动在同一事务内一次提交。
+
+    返回 (巡查记录, 联动统计)；打分未变化时联动统计为 None。
+    """
+    if issue_mode not in VALID_UPDATE_ISSUE_MODES:
+        raise DomainError(
+            f"不支持的问题联动方式「{issue_mode}」，可选："
+            + "、".join(sorted(VALID_UPDATE_ISSUE_MODES))
+        )
     inspection = get_inspection(db, inspection_id)
     data = payload.model_dump(exclude_unset=True)
-    if data.get("items") is not None:
-        items = _normalize_items(payload.items or [])
-        score, grade, result = scoring.evaluate(items)
-        inspection.items = items
+    items_changed = data.get("items") is not None
+    new_items = inspection.items
+    if items_changed:
+        new_items = _normalize_items(payload.items or [])
+        score, grade, result = scoring.evaluate(new_items)
+        inspection.items = new_items
         inspection.score = score
         inspection.grade = grade
         inspection.result = result
@@ -140,15 +177,48 @@ def update_inspection(db: Session, inspection_id: int, payload: InspectionUpdate
         inspection.inspect_time = payload.inspect_time
     if "remark" in data:
         inspection.remark = payload.remark
-    db.commit()
+
+    sync_summary: dict | None = None
+    if items_changed:
+        if issue_mode == "adjust":
+            sync_summary = inspection_sync.reconcile_on_update(db, inspection, new_items)
+        elif issue_mode == "void":
+            sync_summary = inspection_sync.reconcile_void_all(db, inspection)
+        # keep：问题集合不随评分变化
+
+    try:
+        restroom_service.stamp(db, inspection.restroom_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(inspection)
-    return inspection
+    return inspection, sync_summary
 
 
-def delete_inspection(db: Session, inspection_id: int) -> None:
+def delete_inspection(db: Session, inspection_id: int, *, issue_mode: str = "void") -> dict:
+    """删除巡查记录，并按 ``issue_mode`` 一次事务内处理其名下联动问题。
+
+    void（默认）未闭环问题作废关闭、已闭环问题标记作废，全部保留痕迹；
+    delete 物理删除问题及整改流水；unlink 解除关联、问题作为独立工单保留。
+    返回联动统计。
+    """
+    if issue_mode not in VALID_DELETE_ISSUE_MODES:
+        raise DomainError(
+            f"不支持的问题联动方式「{issue_mode}」，可选："
+            + "、".join(sorted(VALID_DELETE_ISSUE_MODES))
+        )
     inspection = get_inspection(db, inspection_id)
-    db.delete(inspection)
-    db.commit()
+    restroom_id = inspection.restroom_id
+    try:
+        summary = inspection_sync.handle_inspection_delete(db, inspection, issue_mode)
+        db.delete(inspection)
+        restroom_service.stamp(db, restroom_id)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    return summary
 
 
 def restroom_options(db: Session, keyword: str | None = None, limit: int = 50) -> list[Restroom]:

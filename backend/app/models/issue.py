@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.constants import IssueCategory, IssueSeverity, IssueStatus
@@ -22,6 +22,16 @@ class Issue(Base):
     inspection_id: Mapped[int | None] = mapped_column(
         ForeignKey("inspections.id", ondelete="SET NULL"), nullable=True, index=True,
         comment="关联巡查记录",
+    )
+    source_item: Mapped[str | None] = mapped_column(
+        String(60), nullable=True, index=True,
+        comment="巡查登记问题对应的检查项名称；非空表示由巡查评价联动管理",
+    )
+    auto_registered: Mapped[bool] = mapped_column(
+        Boolean, default=False, comment="是否由巡查评价自动登记/联动管理"
+    )
+    voided: Mapped[bool] = mapped_column(
+        Boolean, default=False, index=True, comment="是否已随评价变更作废（保留痕迹，不计入统计）"
     )
     title: Mapped[str] = mapped_column(String(120), comment="问题标题")
     description: Mapped[str] = mapped_column(Text, default="", comment="问题描述")

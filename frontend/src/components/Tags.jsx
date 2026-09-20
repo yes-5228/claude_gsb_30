@@ -17,8 +17,12 @@ export function OverdueTag({ deadline, status }) {
   return <span className="tag tag-danger">已超期</span>;
 }
 
-export function GradeTag({ grade }) {
-  const tone =
+export function VoidedTag({ voided }) {
+  if (!voided) return null;
+  return <span className="tag" style={{ background: '#eceff3', color: '#6b7280' }}>已作废</span>;
+}
+
+export function GradeTag({ grade }) {  const tone =
     grade === '优秀'
       ? 'tag-success'
       : grade === '良好'

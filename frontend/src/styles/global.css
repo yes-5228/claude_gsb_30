@@ -850,3 +850,44 @@ table.data-table td.wrap {
     white-space: nowrap;
   }
 }
+
+/* 巡查评价变更 - 问题联动方式选择 */
+.sync-mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.sync-mode {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border, #e3e6eb);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.sync-mode:hover {
+  border-color: #9db8e8;
+}
+
+.sync-mode.selected {
+  border-color: #3b6fd4;
+  background: #f2f6ff;
+}
+
+.sync-mode input[type='radio'] {
+  margin-top: 3px;
+}
+
+.sync-mode-label {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.sync-mode-label.danger {
+  color: #d24b4b;
+}

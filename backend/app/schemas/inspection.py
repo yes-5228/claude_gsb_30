@@ -45,6 +45,17 @@ class InspectionBrief(BaseModel):
     shift: str
 
 
+class InspectionSyncSummary(BaseModel):
+    """评价变更后问题记录的联动结果。"""
+
+    kept: int = Field(default=0, description="保留（未闭环、继续整改）的问题数")
+    adjusted: int = Field(default=0, description="按新评分调整了分类/程度的问题数")
+    voided: int = Field(default=0, description="作废的问题数")
+    created: int = Field(default=0, description="新登记的问题数")
+    deleted: int = Field(default=0, description="物理删除的问题数（删除巡查时）")
+    unlinked: int = Field(default=0, description="解除巡查关联的问题数（删除巡查时）")
+
+
 class InspectionOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -61,3 +72,4 @@ class InspectionOut(BaseModel):
     remark: str | None = None
     created_at: datetime
     issue_count: int = 0
+    issue_sync: InspectionSyncSummary | None = None

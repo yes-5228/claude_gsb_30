@@ -177,6 +177,7 @@ def seed_database(db: Session, *, reset: bool = False) -> int:
             IssueCreate(
                 restroom_id=restroom_id,
                 inspection_id=inspection_id,
+                source_item=problem_item,
                 title=title,
                 description=f"巡查得分 {summary.score} 分（{summary.grade}），检查项「{problem_item}」不达标，请安排整改。",
                 category=category,

@@ -105,7 +105,9 @@ def delete_restroom(db: Session, restroom_id: int, *, force: bool = False) -> No
         select(func.count()).select_from(Inspection).where(Inspection.restroom_id == restroom_id)
     ) or 0
     issue_count = db.scalar(
-        select(func.count()).select_from(Issue).where(Issue.restroom_id == restroom_id)
+        select(func.count())
+        .select_from(Issue)
+        .where(Issue.restroom_id == restroom_id, Issue.voided.is_(False))
     ) or 0
     if (inspection_count or issue_count) and not force:
         raise ConflictError(
@@ -133,10 +135,16 @@ def get_restroom_detail(db: Session, restroom_id: int) -> RestroomDetail:
     open_issue_count = db.scalar(
         select(func.count())
         .select_from(Issue)
-        .where(Issue.restroom_id == restroom_id, Issue.status.in_(OPEN_ISSUE_STATUSES))
+        .where(
+            Issue.restroom_id == restroom_id,
+            Issue.voided.is_(False),
+            Issue.status.in_(OPEN_ISSUE_STATUSES),
+        )
     ) or 0
     total_issue_count = db.scalar(
-        select(func.count()).select_from(Issue).where(Issue.restroom_id == restroom_id)
+        select(func.count())
+        .select_from(Issue)
+        .where(Issue.restroom_id == restroom_id, Issue.voided.is_(False))
     ) or 0
 
     base = RestroomOut.model_validate(restroom).model_dump()
@@ -151,9 +159,14 @@ def get_restroom_detail(db: Session, restroom_id: int) -> RestroomDetail:
     )
 
 
-def touch(db: Session, restroom_id: int) -> None:
-    """巡查或问题变更后刷新台账更新时间。"""
+def stamp(db: Session, restroom_id: int) -> None:
+    """刷新台账更新时间但不提交，供需要与其它写入放在同一事务的场景使用。"""
     restroom = db.get(Restroom, restroom_id)
     if restroom is not None:
         restroom.updated_at = datetime.now()
-        db.commit()
+
+
+def touch(db: Session, restroom_id: int) -> None:
+    """巡查或问题变更后刷新台账更新时间。"""
+    stamp(db, restroom_id)
+    db.commit()

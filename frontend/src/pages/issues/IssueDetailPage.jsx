@@ -5,7 +5,7 @@ import { issueApi } from '../../api/issues.js';
 import DetailList from '../../components/DetailList.jsx';
 import Field from '../../components/Field.jsx';
 import PageHeader from '../../components/PageHeader.jsx';
-import { OverdueTag, SeverityTag, StatusTag } from '../../components/Tags.jsx';
+import { OverdueTag, SeverityTag, StatusTag, VoidedTag } from '../../components/Tags.jsx';
 import Timeline from '../../components/Timeline.jsx';
 import { useToast } from '../../components/Toast.jsx';
 import { useAsync } from '../../hooks/useAsync.js';
@@ -109,6 +109,7 @@ export default function IssueDetailPage() {
                 <div className="inline">
                   <h3>{issue.title}</h3>
                   <StatusTag status={issue.status} />
+                  <VoidedTag voided={issue.voided} />
                   <SeverityTag severity={issue.severity} />
                   <OverdueTag deadline={issue.deadline} status={issue.status} />
                 </div>
@@ -137,6 +138,12 @@ export default function IssueDetailPage() {
                     label: '关联巡查记录',
                     value: issue.inspection_id ? `#${issue.inspection_id}` : '无',
                   },
+                  {
+                    label: '来源检查项',
+                    value: issue.source_item
+                      ? `${issue.source_item}（随巡查评价联动）`
+                      : '手工/群众上报',
+                  },
                   { label: '闭环时间', value: formatDateTime(issue.closed_at) },
                   { label: '问题描述', value: issue.description || '无' },
                 ]}
@@ -148,7 +155,11 @@ export default function IssueDetailPage() {
                 <h3>整改流转</h3>
                 <span className="hint">按流程推进，越级操作会被服务端拒绝</span>
               </div>
-              {options?.length ? (
+              {issue.voided ? (
+                <div className="alert alert-info">
+                  该问题已随巡查评价变更作废，整改流程终止；历史整改轨迹保留可查，但不再计入看板与台账统计。
+                </div>
+              ) : options?.length ? (
                 <div className="action-group">
                   {options.map((option) => (
                     <button
@@ -165,7 +176,7 @@ export default function IssueDetailPage() {
                 <div className="alert alert-info">该问题已关闭，整改流程结束。</div>
               )}
 
-              {issue.status !== '已关闭' ? (
+              {!issue.voided && issue.status !== '已关闭' ? (
                 <form className="form-grid" style={{ marginTop: 18 }} onSubmit={submitProgress}>
                   <Field label="记录类型">
                     <select

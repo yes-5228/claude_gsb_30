@@ -7,7 +7,7 @@ import DataTable from '../../components/DataTable.jsx';
 import Field from '../../components/Field.jsx';
 import PageHeader from '../../components/PageHeader.jsx';
 import Pagination from '../../components/Pagination.jsx';
-import { OverdueTag, SeverityTag, StatusTag } from '../../components/Tags.jsx';
+import { OverdueTag, SeverityTag, StatusTag, VoidedTag } from '../../components/Tags.jsx';
 import { useToast } from '../../components/Toast.jsx';
 import { useAsync } from '../../hooks/useAsync.js';
 import { useDictionaries } from '../../hooks/useDictionaries.js';
@@ -190,6 +190,7 @@ export default function IssueListPage() {
                 render: (row) => (
                   <span className="inline">
                     <StatusTag status={row.status} />
+                    <VoidedTag voided={row.voided} />
                     <OverdueTag deadline={row.deadline} status={row.status} />
                   </span>
                 ),

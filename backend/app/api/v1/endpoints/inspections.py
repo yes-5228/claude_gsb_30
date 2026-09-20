@@ -65,16 +65,42 @@ def get_inspection(inspection_id: int, db: Annotated[Session, Depends(get_db)]) 
 
 @router.patch("/{inspection_id}", response_model=InspectionOut, summary="更新巡查记录")
 def update_inspection(
-    inspection_id: int, payload: InspectionUpdate, db: Annotated[Session, Depends(get_db)]
+    inspection_id: int,
+    payload: InspectionUpdate,
+    db: Annotated[Session, Depends(get_db)],
+    issue_mode: Annotated[
+        str,
+        Query(
+            description="改分后原登记问题的处理：adjust=按新评分联动（保留调整/作废/新增），"
+            "keep=保留不动，void=整批作废",
+            pattern="^(adjust|keep|void)$",
+        ),
+    ] = "adjust",
 ) -> InspectionOut:
-    return inspection_service.to_out(
-        inspection_service.update_inspection(db, inspection_id, payload)
+    inspection, sync_summary = inspection_service.update_inspection(
+        db, inspection_id, payload, issue_mode=issue_mode
     )
+    return inspection_service.to_out(inspection, sync_summary)
 
 
 @router.delete("/{inspection_id}", response_model=MessageOut, summary="删除巡查记录")
 def delete_inspection(
-    inspection_id: int, db: Annotated[Session, Depends(get_db)]
+    inspection_id: int,
+    db: Annotated[Session, Depends(get_db)],
+    issue_mode: Annotated[
+        str,
+        Query(
+            description="删除后其登记问题的处理：void=作废并保留痕迹，delete=一并删除，"
+            "unlink=解除关联、问题保留",
+            pattern="^(void|delete|unlink)$",
+        ),
+    ] = "void",
 ) -> MessageOut:
-    inspection_service.delete_inspection(db, inspection_id)
-    return MessageOut(message="删除成功")
+    summary = inspection_service.delete_inspection(db, inspection_id, issue_mode=issue_mode)
+    if issue_mode == "unlink":
+        detail = f"已解除 {summary['unlinked']} 条问题与该巡查的关联，问题记录保留"
+    elif issue_mode == "delete":
+        detail = f"巡查记录及其登记的 {summary['deleted']} 条问题已删除"
+    else:
+        detail = f"巡查记录已删除，其登记的 {summary['voided']} 条问题已作废"
+    return MessageOut(message=detail)

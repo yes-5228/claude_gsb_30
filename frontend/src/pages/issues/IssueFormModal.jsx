@@ -19,11 +19,13 @@ export default function IssueFormModal({
   const toast = useToast();
   const [restrooms, setRestrooms] = useState([]);
   const [inspections, setInspections] = useState([]);
+  const [selectedInspection, setSelectedInspection] = useState(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [form, setForm] = useState({
     restroom_id: defaultRestroomId ? Number(defaultRestroomId) : '',
     inspection_id: defaultInspectionId ? Number(defaultInspectionId) : '',
+    source_item: '',
     title: '',
     description: '',
     category: '保洁不到位',
@@ -58,7 +60,14 @@ export default function IssueFormModal({
           const extra = await inspectionApi.detail(presetId).catch(() => null);
           if (extra) rows = [extra, ...rows];
         }
-        if (!cancelled) setInspections(rows);
+        if (!cancelled) {
+          setInspections(rows);
+          const preset = defaultInspectionId ? Number(defaultInspectionId) : null;
+          if (preset) {
+            const matched = rows.find((item) => item.id === preset);
+            setSelectedInspection(matched || null);
+          }
+        }
       } catch {
         if (!cancelled) setInspections([]);
       }
@@ -69,6 +78,18 @@ export default function IssueFormModal({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.restroom_id]);
+
+  const selectInspection = (id) => {
+    const value = id ? Number(id) : '';
+    setForm((prev) => ({ ...prev, inspection_id: value, source_item: '' }));
+    setSelectedInspection(value ? inspections.find((item) => item.id === value) || null : null);
+  };
+
+  const failingItems = (selectedInspection?.items || []).filter((item) => Number(item.score) < 6);
+
+  const selectSourceItem = (name) => {
+    setForm((prev) => ({ ...prev, source_item: name }));
+  };
 
   const setValue = (key) => (event) =>
     setForm((prev) => ({ ...prev, [key]: event.target.value }));
@@ -131,7 +152,7 @@ export default function IssueFormModal({
           </select>
         </Field>
         <Field label="关联巡查记录" hint="可不选，直接上报">
-          <select value={form.inspection_id} onChange={setValue('inspection_id')}>
+          <select value={form.inspection_id} onChange={(event) => selectInspection(event.target.value)}>
             <option value="">不关联</option>
             {inspections.map((item) => (
               <option key={item.id} value={item.id}>
@@ -140,18 +161,50 @@ export default function IssueFormModal({
             ))}
           </select>
         </Field>
+        <Field
+          label="问题来源检查项"
+          hint="选中后该问题随巡查改分联动管理"
+          full={failingItems.length === 0}
+        >
+          <select
+            value={form.source_item}
+            onChange={(event) => selectSourceItem(event.target.value)}
+            disabled={!form.inspection_id}
+          >
+            <option value="">手工填报，不随评分联动</option>
+            {failingItems.map((item) => (
+              <option key={item.name} value={item.name}>
+                {item.name}（{item.score} 分，不达标）
+              </option>
+            ))}
+          </select>
+        </Field>
+        {form.source_item ? (
+          <div className="alert alert-info" style={{ gridColumn: '1 / -1' }}>
+            该问题将作为「{form.source_item}」的登记问题：分类与严重程度以后端按评分自动判定为准，
+            巡查重新评分后会自动保留调整、作废或新增。
+          </div>
+        ) : null}
         <Field label="问题标题 *" full>
           <input value={form.title} onChange={setValue('title')} placeholder="如：地面污渍未及时清理" />
         </Field>
         <Field label="问题分类">
-          <select value={form.category} onChange={setValue('category')}>
+          <select
+            value={form.category}
+            onChange={setValue('category')}
+            disabled={!!form.source_item}
+          >
             {(dictionaries?.issue_category || []).map((item) => (
               <option key={item}>{item}</option>
             ))}
           </select>
         </Field>
         <Field label="严重程度">
-          <select value={form.severity} onChange={setValue('severity')}>
+          <select
+            value={form.severity}
+            onChange={setValue('severity')}
+            disabled={!!form.source_item}
+          >
             {(dictionaries?.issue_severity || []).map((item) => (
               <option key={item}>{item}</option>
             ))}

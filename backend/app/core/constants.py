@@ -49,6 +49,16 @@ class IssueStatus(StrEnum):
     CLOSED = "已关闭"
 
 
+class IssueSyncMode(StrEnum):
+    """巡查评价变更时，对当次巡查登记问题的处理方式。"""
+
+    ADJUST = "adjust"  # 按新评分联动：保留调整/作废/新增
+    KEEP = "keep"  # 保留原问题，不随评分联动
+    VOID = "void"  # 整批评为作废
+    UNLINK = "unlink"  # 解除与巡查的关联，问题本身保留
+    DELETE = "delete"  # 连同问题记录一起物理删除
+
+
 # 整改流转规则：当前状态 -> 允许流转到的状态
 ISSUE_TRANSITIONS: dict[str, list[str]] = {
     IssueStatus.PENDING: [IssueStatus.PROCESSING, IssueStatus.CLOSED],
@@ -97,3 +107,41 @@ OPEN_ISSUE_STATUSES: list[str] = [
 
 # 单检查项低于该分数视为不合格项
 INSPECTION_ITEM_PROBLEM_THRESHOLD = 6
+
+# 检查项名称 -> 问题分类，巡查登记问题与评分联动均以此为准
+CATEGORY_BY_CHECK_ITEM: dict[str, IssueCategory] = {
+    "地面与台阶清洁": IssueCategory.CLEANING,
+    "便池蹲位清洁": IssueCategory.CLEANING,
+    "洗手台与镜面": IssueCategory.CLEANING,
+    "通风除臭": IssueCategory.ODOR,
+    "耗材补充": IssueCategory.CONSUMABLE,
+    "垃圾清运": IssueCategory.CLEANING,
+    "工具与标识摆放": IssueCategory.OTHER,
+    "墙面门窗卫生": IssueCategory.CLEANING,
+}
+
+# 各检查项不达标时自动登记问题的标题模板
+ISSUE_TITLE_BY_CHECK_ITEM: dict[str, str] = {
+    "地面与台阶清洁": "地面或台阶清洁不达标",
+    "便池蹲位清洁": "便池蹲位清洁不达标",
+    "洗手台与镜面": "洗手台与镜面清洁不达标",
+    "通风除臭": "通风除臭不到位，存在异味",
+    "耗材补充": "耗材补充不及时",
+    "垃圾清运": "垃圾清运不及时",
+    "工具与标识摆放": "工具与标识摆放不规范",
+    "墙面门窗卫生": "墙面门窗卫生不达标",
+}
+
+# 系统联动作废/登记问题时整改流水使用的动作名
+ACTION_RECONCILE_VOID = "评价联动作废"
+ACTION_RECONCILE_ADJUST = "评价联动调整"
+ACTION_RECONCILE_CREATE = "评价联动登记"
+ACTION_DELETE_VOID = "巡查删除作废"
+
+# 自动登记问题：0 分视为紧急，低于 3 分视为严重，其余一般
+INSPECTION_ITEM_URGENT_SCORE = 0
+INSPECTION_ITEM_SERIOUS_SCORE = 3
+
+# 自动登记问题的默认整改期限（天），按严重程度区分
+DEFAULT_DEADLINE_DAYS_URGENT = 1
+DEFAULT_DEADLINE_DAYS_NORMAL = 3

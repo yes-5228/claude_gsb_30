@@ -56,3 +56,29 @@ def init_db() -> None:
     from app import models  # noqa: F401  确保模型完成注册
 
     Base.metadata.create_all(bind=engine)
+    _ensure_columns()
+
+
+def _ensure_columns() -> None:
+    """为已存在的库补齐新版本新增的列（create_all 不会修改既有表结构）。"""
+
+    from sqlalchemy import inspect, text
+
+    required = {
+        "issues": {
+            "source_item": "VARCHAR(60)",
+            "auto_registered": "BOOLEAN DEFAULT 0",
+            "voided": "BOOLEAN DEFAULT 0",
+        },
+    }
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+    with engine.begin() as conn:
+        for table, columns in required.items():
+            if table not in existing_tables:
+                continue
+            present = {column["name"] for column in inspector.get_columns(table)}
+            for name, ddl_type in columns.items():
+                if name in present:
+                    continue
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {name} {ddl_type}"))

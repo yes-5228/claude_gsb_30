@@ -38,17 +38,22 @@ def overview(db: Session) -> OverviewStats:
     week_start = today_start - timedelta(days=6)
     month_start = datetime.combine(date(now.year, now.month, 1), time.min)
 
-    issue_total = _count(db, Issue)
-    issue_open = _count(db, Issue, Issue.status.in_(OPEN_ISSUE_STATUSES))
+    # 已随评价作废的问题保留痕迹但不再计入任何统计
+    effective = Issue.voided.is_(False)
+    issue_total = _count(db, Issue, effective)
+    issue_open = _count(
+        db, Issue, effective, Issue.status.in_(OPEN_ISSUE_STATUSES)
+    )
     issue_overdue = _count(
         db,
         Issue,
+        effective,
         Issue.deadline.is_not(None),
         Issue.deadline < now,
         Issue.status.in_(OPEN_ISSUE_STATUSES),
     )
-    done_count = _count(db, Issue, Issue.status == IssueStatus.DONE.value)
-    closed_count = _count(db, Issue, Issue.status == IssueStatus.CLOSED.value)
+    done_count = _count(db, Issue, effective, Issue.status == IssueStatus.DONE.value)
+    closed_count = _count(db, Issue, effective, Issue.status == IssueStatus.CLOSED.value)
     finished = done_count + closed_count
 
     return OverviewStats(
@@ -71,7 +76,11 @@ def overview(db: Session) -> OverviewStats:
         issue_open=issue_open,
         issue_overdue=issue_overdue,
         issue_done_this_month=_count(
-            db, Issue, Issue.status == IssueStatus.DONE.value, Issue.updated_at >= month_start
+            db,
+            Issue,
+            effective,
+            Issue.status == IssueStatus.DONE.value,
+            Issue.updated_at >= month_start,
         ),
         rectification_rate=round(finished / issue_total * 100, 1) if issue_total else 0.0,
     )
@@ -79,14 +88,24 @@ def overview(db: Session) -> OverviewStats:
 
 def issue_by_status(db: Session) -> list[NameValue]:
     rows = dict(
-        db.execute(select(Issue.status, func.count()).group_by(Issue.status)).all()  # type: ignore[arg-type]
+        db.execute(
+            select(Issue.status, func.count())
+            .where(Issue.voided.is_(False))
+            .group_by(Issue.status)
+        ).all()  # type: ignore[arg-type]
     )
     ordered = list(IssueStatus)
     return [NameValue(name=status.value, value=float(rows.get(status.value, 0))) for status in ordered]
 
 
 def issue_by_severity(db: Session) -> list[NameValue]:
-    rows = dict(db.execute(select(Issue.severity, func.count()).group_by(Issue.severity)).all())
+    rows = dict(
+        db.execute(
+            select(Issue.severity, func.count())
+            .where(Issue.voided.is_(False))
+            .group_by(Issue.severity)
+        ).all()
+    )
     return [
         NameValue(name=severity.value, value=float(rows.get(severity.value, 0)))
         for severity in IssueSeverity
@@ -95,12 +114,14 @@ def issue_by_severity(db: Session) -> list[NameValue]:
 
 def issue_by_category(db: Session) -> list[CategoryStat]:
     rows = db.execute(
-        select(Issue.category, func.count()).group_by(Issue.category)
+        select(Issue.category, func.count())
+        .where(Issue.voided.is_(False))
+        .group_by(Issue.category)
     ).all()
     totals = {category: int(count) for category, count in rows}
     open_rows = db.execute(
         select(Issue.category, func.count())
-        .where(Issue.status.in_(OPEN_ISSUE_STATUSES))
+        .where(Issue.voided.is_(False), Issue.status.in_(OPEN_ISSUE_STATUSES))
         .group_by(Issue.category)
     ).all()
     opens = {category: int(count) for category, count in open_rows}
@@ -126,7 +147,8 @@ def inspection_trend(db: Session, days: int = 14) -> list[TrendPoint]:
         select(Inspection.inspect_time, Inspection.score).where(Inspection.inspect_time >= start_dt)
     ).all()
     issue_rows = db.execute(
-        select(Issue.report_time).where(Issue.report_time >= start_dt)
+        select(Issue.report_time)
+        .where(Issue.report_time >= start_dt, Issue.voided.is_(False))
     ).all()
 
     buckets: dict[str, dict[str, float]] = {}
@@ -165,7 +187,7 @@ def district_stats(db: Session) -> list[DistrictStat]:
     open_rows = db.execute(
         select(Restroom.district, func.count(Issue.id))
         .join(Issue, Issue.restroom_id == Restroom.id)
-        .where(Issue.status.in_(OPEN_ISSUE_STATUSES))
+        .where(Issue.voided.is_(False), Issue.status.in_(OPEN_ISSUE_STATUSES))
         .group_by(Restroom.district)
     ).all()
     opens = {district: int(count) for district, count in open_rows}
@@ -204,7 +226,7 @@ def restroom_ranking(db: Session, limit: int = 8) -> list[RestroomRankItem]:
     }
     open_rows = db.execute(
         select(Issue.restroom_id, func.count())
-        .where(Issue.status.in_(OPEN_ISSUE_STATUSES))
+        .where(Issue.voided.is_(False), Issue.status.in_(OPEN_ISSUE_STATUSES))
         .group_by(Issue.restroom_id)
     ).all()
     opens = {rid: int(count) for rid, count in open_rows}

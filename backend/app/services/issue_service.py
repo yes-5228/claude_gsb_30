@@ -76,6 +76,8 @@ def list_issues(
     severity: str | None = None,
     keyword: str | None = None,
     overdue: bool | None = None,
+    include_voided: bool = False,
+    voided_only: bool = False,
     date_from: date | None = None,
     date_to: date | None = None,
     page: int = 1,
@@ -84,6 +86,10 @@ def list_issues(
     order: str = "desc",
 ) -> tuple[list[Issue], int]:
     stmt = select(Issue)
+    if voided_only:
+        stmt = stmt.where(Issue.voided.is_(True))
+    elif not include_voided:
+        stmt = stmt.where(Issue.voided.is_(False))
     if district:
         stmt = stmt.join(Restroom, Restroom.id == Issue.restroom_id).where(
             Restroom.district == district
@@ -136,6 +142,7 @@ def list_issues(
 
 def create_issue(db: Session, payload: IssueCreate) -> Issue:
     restroom_service.get_restroom(db, payload.restroom_id)
+    inspection = None
     if payload.inspection_id is not None:
         inspection = db.get(Inspection, payload.inspection_id)
         if inspection is None:
@@ -143,10 +150,39 @@ def create_issue(db: Session, payload: IssueCreate) -> Issue:
         if inspection.restroom_id != payload.restroom_id:
             raise DomainError("关联的巡查记录与所选公厕不一致")
 
-    data = _values(payload.model_dump(exclude={"inspection_id", "report_time", "initial_remark"}))
+    source_item = (payload.source_item or "").strip() or None
+    auto_registered = False
+    derived_category = None
+    derived_severity = None
+    if source_item:
+        if inspection is None:
+            raise DomainError("指定检查项来源时必须关联巡查记录")
+        matched = next(
+            (item for item in (inspection.items or []) if item.get("name") == source_item),
+            None,
+        )
+        if matched is None:
+            raise DomainError(f"关联巡查记录中不存在检查项「{source_item}」")
+        # 检查项登记的问题，分类与严重程度以评分为准，不采用前端手填值
+        from app.services import inspection_sync
+
+        derived_category = inspection_sync.category_for_item(source_item)
+        derived_severity = inspection_sync.severity_for_score(float(matched.get("score", 0)))
+        auto_registered = True
+
+    data = _values(
+        payload.model_dump(
+            exclude={"inspection_id", "report_time", "initial_remark", "source_item"}
+        )
+    )
+    if auto_registered:
+        data["category"] = derived_category
+        data["severity"] = derived_severity
     issue = Issue(
         code=_next_code(db),
         inspection_id=payload.inspection_id,
+        source_item=source_item,
+        auto_registered=auto_registered,
         report_time=payload.report_time or datetime.now(),
         status=IssueStatus.PENDING.value,
         **data,
@@ -188,6 +224,8 @@ def allowed_transitions(issue: Issue) -> list[dict[str, str]]:
 
 def change_status(db: Session, issue_id: int, payload: IssueStatusUpdate) -> Issue:
     issue = get_issue(db, issue_id)
+    if issue.voided:
+        raise DomainError("该问题已随巡查评价变更作废，无法再流转")
     target = payload.to_status.value
     if target == issue.status:
         raise DomainError(f"问题已处于「{target}」状态")
@@ -221,6 +259,8 @@ def change_status(db: Session, issue_id: int, payload: IssueStatusUpdate) -> Iss
 def add_record(db: Session, issue_id: int, *, action: str, operator: str, remark: str | None) -> Issue:
     """在不改变状态的前提下追加跟进记录（如整改进度说明）。"""
     issue = get_issue(db, issue_id)
+    if issue.voided:
+        raise DomainError("问题已随评价作废，无法追加整改记录")
     if issue.status == IssueStatus.CLOSED.value:
         raise DomainError("问题已关闭，无法追加整改记录")
     issue.records.append(
