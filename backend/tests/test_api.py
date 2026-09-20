@@ -2,6 +2,8 @@
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from tests.conftest import full_items
 
 
@@ -223,3 +225,201 @@ def test_dashboard_stats(client, restroom):
     }
     assert payload["top_restrooms"]
     assert "rectification_rate" in overview
+
+
+def _create_inspection(client, restroom_id: int, items: list[dict]) -> dict:
+    response = client.post(
+        "/api/v1/inspections",
+        json={"restroom_id": restroom_id, "inspector": "李巡查", "items": items},
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def _create_issue(client, restroom_id: int, inspection_id: int, **extra) -> dict:
+    payload = {
+        "restroom_id": restroom_id,
+        "inspection_id": inspection_id,
+        "title": "巡查发现问题",
+        **extra,
+    }
+    response = client.post("/api/v1/issues", json=payload)
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_inspection_rescore_syncs_issues(client, restroom):
+    # 巡查：地面 4 分、蹲位 3 分、通风 5 分，三项不达标
+    items = full_items(9)
+    items[0]["score"] = 4  # 地面与台阶清洁
+    items[1]["score"] = 3  # 便池蹲位清洁
+    items[3]["score"] = 5  # 通风除臭
+    inspection = _create_inspection(client, restroom["id"], items)
+    assert inspection["result"] == "发现问题"
+
+    floor = _create_issue(
+        client,
+        restroom["id"],
+        inspection["id"],
+        check_item="地面与台阶清洁",
+        title="地面污渍未清理",
+        category="保洁不到位",
+        severity="严重",
+    )
+    odor = _create_issue(
+        client,
+        restroom["id"],
+        inspection["id"],
+        check_item="通风除臭",
+        title="公厕内异味明显",
+        category="异味扰民",
+        severity="一般",
+    )
+    # 蹲位得分保持不变，严重程度为人工指定的「紧急」（与按分推算的「严重」不同）
+    steady = _create_issue(
+        client,
+        restroom["id"],
+        inspection["id"],
+        check_item="便池蹲位清洁",
+        title="蹲位清洁不彻底",
+        category="保洁不到位",
+        severity="紧急",
+    )
+    manual = _create_issue(client, restroom["id"], inspection["id"], title="标识牌褪色")
+
+    # 改分：地面 4→2（仍不达标，严重程度应升级为紧急）；通风 5→9（达标，问题应作废）；蹲位保持 3 分
+    rescored = full_items(9)
+    rescored[0]["score"] = 2
+    rescored[1]["score"] = 3
+    response = client.patch(f"/api/v1/inspections/{inspection['id']}", json={"items": rescored})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["issue_sync"] == {"kept": 2, "adjusted": 1, "voided": 1}
+
+    # 调整：仍不达标且分数变化 -> 保留待整改，严重程度随分数重算，轨迹新增联动记录
+    floor_after = client.get(f"/api/v1/issues/{floor['id']}").json()
+    assert floor_after["status"] == "待整改"
+    assert floor_after["severity"] == "紧急"
+    assert floor_after["records"][-1]["action"] == "巡查改分联动"
+    assert "紧急" in floor_after["records"][-1]["remark"]
+
+    # 作废：改分后达标 -> 自动作废关闭
+    odor_after = client.get(f"/api/v1/issues/{odor['id']}").json()
+    assert odor_after["status"] == "已关闭"
+    assert odor_after["closed_at"] is not None
+    assert odor_after["records"][-1]["action"] == "巡查改分作废"
+    assert odor_after["records"][-1]["to_status"] == "已关闭"
+
+    # 保留：来源检查项得分未变 -> 人工指定的严重程度不被改写，不新增流水
+    steady_after = client.get(f"/api/v1/issues/{steady['id']}").json()
+    assert steady_after["status"] == "待整改"
+    assert steady_after["severity"] == "紧急"
+    assert len(steady_after["records"]) == 1
+
+    # 保留：手工上报（无来源检查项）的问题不受影响
+    manual_after = client.get(f"/api/v1/issues/{manual['id']}").json()
+    assert manual_after["status"] == "待整改"
+    assert len(manual_after["records"]) == 1
+
+    # 看板与台账口径一致：未闭环问题数 = 待整改的 3 条
+    detail = client.get(f"/api/v1/restrooms/{restroom['id']}").json()
+    assert detail["open_issue_count"] == 3
+    open_list = client.get(
+        "/api/v1/issues", params={"restroom_id": restroom["id"], "open_only": "true"}
+    ).json()
+    assert open_list["meta"]["total"] == 3
+
+    # 未改动检查项时不触发联动
+    untouched = client.patch(
+        f"/api/v1/inspections/{inspection['id']}", json={"remark": "补充说明"}
+    ).json()
+    assert untouched["issue_sync"] is None
+
+
+def test_inspection_item_removed_and_inflight_issue_kept(client, restroom):
+    items = full_items(9)
+    items[1]["score"] = 3  # 便池蹲位清洁 不达标
+    inspection = _create_inspection(client, restroom["id"], items)
+
+    pending = _create_issue(
+        client, restroom["id"], inspection["id"], check_item="便池蹲位清洁", title="蹲位残留"
+    )
+    inflight = _create_issue(
+        client, restroom["id"], inspection["id"], check_item="便池蹲位清洁", title="蹲位污渍"
+    )
+    started = client.post(
+        f"/api/v1/issues/{inflight['id']}/transitions",
+        json={"to_status": "整改中", "operator": "保洁班组"},
+    )
+    assert started.status_code == 200
+
+    # 从巡查中删掉「便池蹲位清洁」检查项
+    reduced = [item for item in full_items(9) if item["name"] != "便池蹲位清洁"]
+    updated = client.patch(f"/api/v1/inspections/{inspection['id']}", json={"items": reduced})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["issue_sync"] == {"kept": 1, "adjusted": 0, "voided": 1}
+
+    # 待整改问题：来源检查项被删除 -> 作废关闭
+    pending_after = client.get(f"/api/v1/issues/{pending['id']}").json()
+    assert pending_after["status"] == "已关闭"
+    assert "已从本次巡查中删除" in pending_after["records"][-1]["remark"]
+
+    # 已进入整改流程的问题：保留不动，不重写历史
+    inflight_after = client.get(f"/api/v1/issues/{inflight['id']}").json()
+    assert inflight_after["status"] == "整改中"
+    assert all(record["action"] != "巡查改分作废" for record in inflight_after["records"])
+
+
+def test_inspection_update_rolls_back_when_sync_fails(client, restroom, monkeypatch):
+    items = full_items(9)
+    items[0]["score"] = 4
+    inspection = _create_inspection(client, restroom["id"], items)
+    issue = _create_issue(
+        client, restroom["id"], inspection["id"], check_item="地面与台阶清洁", title="地面污渍"
+    )
+
+    from app.services import issue_service
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("模拟联动中途失败")
+
+    monkeypatch.setattr(issue_service, "sync_issues_for_inspection", boom)
+
+    with pytest.raises(RuntimeError):
+        client.patch(
+            f"/api/v1/inspections/{inspection['id']}", json={"items": full_items(9)}
+        )
+
+    # 中途失败整体回滚：改分未生效，问题集合保持原样
+    after = client.get(f"/api/v1/inspections/{inspection['id']}").json()
+    assert after["score"] == inspection["score"]
+    assert after["result"] == "发现问题"
+    issue_after = client.get(f"/api/v1/issues/{issue['id']}").json()
+    assert issue_after["status"] == "待整改"
+    assert len(issue_after["records"]) == 1
+
+
+def test_issue_check_item_validation(client, restroom):
+    inspection = _create_inspection(client, restroom["id"], full_items(9))
+
+    unknown = client.post(
+        "/api/v1/issues",
+        json={
+            "restroom_id": restroom["id"],
+            "inspection_id": inspection["id"],
+            "check_item": "不存在的检查项",
+            "title": "来源检查项有误",
+        },
+    )
+    assert unknown.status_code == 400
+    assert "来源检查项" in unknown.json()["detail"]
+
+    no_inspection = client.post(
+        "/api/v1/issues",
+        json={
+            "restroom_id": restroom["id"],
+            "check_item": "地面与台阶清洁",
+            "title": "未关联巡查",
+        },
+    )
+    assert no_inspection.status_code == 400

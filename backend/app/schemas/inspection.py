@@ -61,3 +61,17 @@ class InspectionOut(BaseModel):
     remark: str | None = None
     created_at: datetime
     issue_count: int = 0
+
+
+class IssueSyncSummary(BaseModel):
+    """巡查改分后对已登记问题记录的联动结果。"""
+
+    kept: int = Field(description="保留不动的问题数（已进入整改流程或判断未变）")
+    adjusted: int = Field(description="按新评分调整严重程度/分类的问题数")
+    voided: int = Field(description="因检查项删除或达标而作废关闭的问题数")
+
+
+class InspectionUpdateOut(InspectionOut):
+    issue_sync: IssueSyncSummary | None = Field(
+        default=None, description="本次改分对关联问题记录的联动摘要，未改动检查项时为 null"
+    )

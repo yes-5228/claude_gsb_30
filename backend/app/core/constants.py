@@ -97,3 +97,20 @@ OPEN_ISSUE_STATUSES: list[str] = [
 
 # 单检查项低于该分数视为不合格项
 INSPECTION_ITEM_PROBLEM_THRESHOLD = 6
+
+# 检查项 -> 问题分类的映射：巡查登记问题时按来源检查项确定分类
+ISSUE_CATEGORY_BY_CHECK_ITEM: dict[str, IssueCategory] = {
+    "地面与台阶清洁": IssueCategory.CLEANING,
+    "便池蹲位清洁": IssueCategory.CLEANING,
+    "洗手台与镜面": IssueCategory.CLEANING,
+    "通风除臭": IssueCategory.ODOR,
+    "耗材补充": IssueCategory.CONSUMABLE,
+    "垃圾清运": IssueCategory.CLEANING,
+    "工具与标识摆放": IssueCategory.OTHER,
+    "墙面门窗卫生": IssueCategory.CLEANING,
+}
+
+# 巡查改分联动问题记录时写入整改流水的动作名与操作人
+INSPECTION_SYNC_OPERATOR = "系统"
+INSPECTION_SYNC_ACTION_ADJUST = "巡查改分联动"
+INSPECTION_SYNC_ACTION_VOID = "巡查改分作废"

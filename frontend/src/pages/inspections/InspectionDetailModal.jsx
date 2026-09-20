@@ -3,7 +3,7 @@ import DetailList from '../../components/DetailList.jsx';
 import { GradeTag, ScorePill, StatusTag } from '../../components/Tags.jsx';
 import { formatDateTime } from '../../utils/format.js';
 
-export default function InspectionDetailModal({ inspection, onClose, onReportIssue }) {
+export default function InspectionDetailModal({ inspection, onClose, onEdit, onReportIssue }) {
   if (!inspection) return null;
 
   return (
@@ -15,6 +15,9 @@ export default function InspectionDetailModal({ inspection, onClose, onReportIss
         <>
           <button type="button" className="btn" onClick={onClose}>
             关闭
+          </button>
+          <button type="button" className="btn" onClick={() => onEdit(inspection)}>
+            改分 / 编辑
           </button>
           <button
             type="button"

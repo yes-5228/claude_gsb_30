@@ -34,6 +34,7 @@ export default function InspectionListPage() {
 
   const list = useListQuery((params) => inspectionApi.list(params), DEFAULT_FILTERS, 10);
   const { data: districts } = useAsync(() => restroomApi.districts(), []);
+  const [editing, setEditing] = useState(null);
 
   const remove = async (row) => {
     if (!window.confirm('确认删除该条巡查记录？关联的问题记录不会被删除。')) return;
@@ -156,6 +157,9 @@ export default function InspectionListPage() {
                     <button type="button" className="btn-link" onClick={() => setActive(row)}>
                       详情
                     </button>
+                    <button type="button" className="btn-link" onClick={() => setEditing(row)}>
+                      改分
+                    </button>
                     <button
                       type="button"
                       className="btn-link"
@@ -183,10 +187,22 @@ export default function InspectionListPage() {
         <InspectionFormModal onClose={() => setShowForm(false)} onSaved={list.reload} />
       ) : null}
 
+      {editing ? (
+        <InspectionFormModal
+          inspection={editing}
+          onClose={() => setEditing(null)}
+          onSaved={list.reload}
+        />
+      ) : null}
+
       {active ? (
         <InspectionDetailModal
           inspection={active}
           onClose={() => setActive(null)}
+          onEdit={(inspection) => {
+            setActive(null);
+            setEditing(inspection);
+          }}
           onReportIssue={(inspection) =>
             navigate(
               `/issues?createFromInspection=${inspection.id}&restroomId=${inspection.restroom_id}`,

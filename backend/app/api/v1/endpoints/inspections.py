@@ -9,7 +9,13 @@ from sqlalchemy.orm import Session
 from app.api.deps import PaginationDep, build_meta
 from app.core.database import get_db
 from app.schemas.common import MessageOut, Page
-from app.schemas.inspection import InspectionCreate, InspectionOut, InspectionUpdate
+from app.schemas.inspection import (
+    InspectionCreate,
+    InspectionOut,
+    InspectionUpdate,
+    InspectionUpdateOut,
+    IssueSyncSummary,
+)
 from app.services import inspection_service
 
 router = APIRouter(prefix="/inspections", tags=["保洁巡查"])
@@ -63,13 +69,18 @@ def get_inspection(inspection_id: int, db: Annotated[Session, Depends(get_db)]) 
     return inspection_service.to_out(inspection_service.get_inspection(db, inspection_id))
 
 
-@router.patch("/{inspection_id}", response_model=InspectionOut, summary="更新巡查记录")
+@router.patch(
+    "/{inspection_id}",
+    response_model=InspectionUpdateOut,
+    summary="更新巡查记录（改分/删减检查项会联动已登记的问题记录）",
+)
 def update_inspection(
     inspection_id: int, payload: InspectionUpdate, db: Annotated[Session, Depends(get_db)]
-) -> InspectionOut:
-    return inspection_service.to_out(
-        inspection_service.update_inspection(db, inspection_id, payload)
-    )
+) -> InspectionUpdateOut:
+    inspection, sync_summary = inspection_service.update_inspection(db, inspection_id, payload)
+    data = InspectionUpdateOut.model_validate(inspection_service.to_out(inspection))
+    data.issue_sync = IssueSyncSummary(**sync_summary) if sync_summary is not None else None
+    return data
 
 
 @router.delete("/{inspection_id}", response_model=MessageOut, summary="删除巡查记录")

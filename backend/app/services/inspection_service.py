@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import DomainError, NotFoundError
 from app.models import Inspection, Restroom
 from app.schemas.inspection import InspectionCreate, InspectionOut, InspectionUpdate
-from app.services import restroom_service, scoring
+from app.services import issue_service, restroom_service, scoring
 
 SORTABLE_FIELDS = {
     "inspect_time": Inspection.inspect_time,
@@ -122,27 +122,50 @@ def create_inspection(db: Session, payload: InspectionCreate) -> Inspection:
     return inspection
 
 
-def update_inspection(db: Session, inspection_id: int, payload: InspectionUpdate) -> Inspection:
+def update_inspection(
+    db: Session, inspection_id: int, payload: InspectionUpdate
+) -> tuple[Inspection, dict[str, int] | None]:
+    """更新巡查记录；改分或删减检查项时同步联动已登记的问题记录。
+
+    巡查更新、问题联动（保留/调整/作废）与台账刷新在同一个事务中提交，
+    中途任何失败都会整体回滚，不会留下改了一半的问题集合。
+    返回 (巡查记录, 问题联动摘要)；未改动检查项时摘要为 None。
+    """
     inspection = get_inspection(db, inspection_id)
     data = payload.model_dump(exclude_unset=True)
-    if data.get("items") is not None:
-        items = _normalize_items(payload.items or [])
-        score, grade, result = scoring.evaluate(items)
-        inspection.items = items
-        inspection.score = score
-        inspection.grade = grade
-        inspection.result = result
-    if data.get("inspector") is not None:
-        inspection.inspector = payload.inspector or inspection.inspector
-    if data.get("shift") is not None and payload.shift is not None:
-        inspection.shift = payload.shift.value if hasattr(payload.shift, "value") else payload.shift
-    if data.get("inspect_time") is not None and payload.inspect_time is not None:
-        inspection.inspect_time = payload.inspect_time
-    if "remark" in data:
-        inspection.remark = payload.remark
-    db.commit()
+    sync_summary: dict[str, int] | None = None
+    try:
+        if data.get("items") is not None:
+            previous_items = [dict(item) for item in inspection.items or []]
+            items = _normalize_items(payload.items or [])
+            score, grade, result = scoring.evaluate(items)
+            inspection.items = items
+            inspection.score = score
+            inspection.grade = grade
+            inspection.result = result
+            db.flush()
+            sync_summary = issue_service.sync_issues_for_inspection(
+                db, inspection, previous_items
+            )
+        if data.get("inspector") is not None:
+            inspection.inspector = payload.inspector or inspection.inspector
+        if data.get("shift") is not None and payload.shift is not None:
+            inspection.shift = (
+                payload.shift.value if hasattr(payload.shift, "value") else payload.shift
+            )
+        if data.get("inspect_time") is not None and payload.inspect_time is not None:
+            inspection.inspect_time = payload.inspect_time
+        if "remark" in data:
+            inspection.remark = payload.remark
+        restroom = db.get(Restroom, inspection.restroom_id)
+        if restroom is not None:
+            restroom.updated_at = datetime.now()
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.refresh(inspection)
-    return inspection
+    return inspection, sync_summary
 
 
 def delete_inspection(db: Session, inspection_id: int) -> None:

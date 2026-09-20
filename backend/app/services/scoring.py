@@ -8,6 +8,7 @@ from app.core.constants import (
     INSPECTION_ITEM_MAX_SCORE,
     INSPECTION_ITEM_PROBLEM_THRESHOLD,
     InspectionResult,
+    IssueSeverity,
 )
 
 
@@ -49,3 +50,13 @@ def evaluate(items: list[dict]) -> tuple[float, str, str]:
 
 def problem_items(items: list[dict]) -> list[dict]:
     return [item for item in items if float(item["score"]) < INSPECTION_ITEM_PROBLEM_THRESHOLD]
+
+
+def severity_for_item_score(score: float) -> str:
+    """按不达标检查项的得分确定问题严重程度（仅用于低于合格线的分数）。"""
+    value = float(score)
+    if value < 3:
+        return IssueSeverity.URGENT.value
+    if value < 5:
+        return IssueSeverity.SERIOUS.value
+    return IssueSeverity.NORMAL.value

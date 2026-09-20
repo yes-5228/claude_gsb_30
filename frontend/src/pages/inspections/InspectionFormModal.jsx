@@ -10,20 +10,35 @@ import { useDictionaries } from '../../hooks/useDictionaries.js';
 import { calcScore, gradeOf, resultOf } from '../../utils/scoring.js';
 import { toDateTimeInput } from '../../utils/format.js';
 
-export default function InspectionFormModal({ defaultRestroomId, onClose, onSaved }) {
+const normalizeItems = (items) =>
+  items.map((item) => ({
+    name: item.name,
+    score: Number(item.score),
+    remark: item.remark ? item.remark : null,
+  }));
+
+export default function InspectionFormModal({ inspection, defaultRestroomId, onClose, onSaved }) {
+  const isEdit = Boolean(inspection);
   const { dictionaries } = useDictionaries();
   const toast = useToast();
   const [options, setOptions] = useState([]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [form, setForm] = useState({
-    restroom_id: defaultRestroomId ? Number(defaultRestroomId) : '',
-    inspector: '',
-    shift: '早班',
-    inspect_time: toDateTimeInput(),
-    remark: '',
+    restroom_id: inspection?.restroom_id ?? (defaultRestroomId ? Number(defaultRestroomId) : ''),
+    inspector: inspection?.inspector ?? '',
+    shift: inspection?.shift ?? '早班',
+    inspect_time: inspection ? toDateTimeInput(inspection.inspect_time) : toDateTimeInput(),
+    remark: inspection?.remark ?? '',
   });
-  const [items, setItems] = useState([]);
+  const [items, setItems] = useState(() =>
+    inspection ? normalizeItems(inspection.items || []) : [],
+  );
+
+  const originalItems = useMemo(
+    () => (inspection ? normalizeItems(inspection.items || []) : []),
+    [inspection],
+  );
 
   useEffect(() => {
     metaApi
@@ -33,9 +48,10 @@ export default function InspectionFormModal({ defaultRestroomId, onClose, onSave
   }, []);
 
   useEffect(() => {
+    if (isEdit) return;
     const template = dictionaries?.inspection_check_items || [];
     setItems(template.map((name) => ({ name, score: 9, remark: '' })));
-  }, [dictionaries]);
+  }, [dictionaries, isEdit]);
 
   const score = useMemo(() => calcScore(items), [items]);
   const grade = gradeOf(score);
@@ -51,7 +67,25 @@ export default function InspectionFormModal({ defaultRestroomId, onClose, onSave
     setItems((prev) => prev.map((item, idx) => (idx === index ? { ...item, remark: value } : item)));
   };
 
+  const removeItem = (index) => {
+    setItems((prev) => (prev.length > 1 ? prev.filter((_, idx) => idx !== index) : prev));
+  };
+
+  // 把模板里被删掉的标准检查项补回来（默认 9 分，可再调整）
+  const restoreMissingItems = () => {
+    const template = dictionaries?.inspection_check_items || [];
+    setItems((prev) => {
+      const existing = new Set(prev.map((item) => item.name));
+      const missing = template.filter((name) => !existing.has(name));
+      return [...prev, ...missing.map((name) => ({ name, score: 9, remark: '' }))];
+    });
+  };
+
   const fillAll = (value) => setItems((prev) => prev.map((item) => ({ ...item, score: value })));
+
+  const missingCount = (dictionaries?.inspection_check_items || []).filter(
+    (name) => !items.some((item) => item.name === name),
+  ).length;
 
   const submit = async (event) => {
     event.preventDefault();
@@ -63,16 +97,42 @@ export default function InspectionFormModal({ defaultRestroomId, onClose, onSave
       setError('请填写巡查人');
       return;
     }
+    if (!items.length) {
+      setError('至少保留一个检查项');
+      return;
+    }
     setSaving(true);
     setError(null);
     try {
-      await inspectionApi.create({
-        ...form,
-        restroom_id: Number(form.restroom_id),
-        inspect_time: form.inspect_time ? new Date(form.inspect_time).toISOString() : null,
-        items,
-      });
-      toast.success('巡查记录已提交');
+      if (isEdit) {
+        const payload = {
+          inspector: form.inspector,
+          shift: form.shift,
+          inspect_time: form.inspect_time ? new Date(form.inspect_time).toISOString() : null,
+          remark: form.remark,
+        };
+        // 检查项有改动才提交，由服务端联动重判已登记的问题记录
+        if (JSON.stringify(normalizeItems(items)) !== JSON.stringify(originalItems)) {
+          payload.items = normalizeItems(items);
+        }
+        const updated = await inspectionApi.update(inspection.id, payload);
+        const sync = updated.issue_sync;
+        if (sync && (sync.adjusted || sync.voided)) {
+          toast.success(
+            `巡查已更新，联动问题记录：调整 ${sync.adjusted} 条、作废 ${sync.voided} 条、保留 ${sync.kept} 条`,
+          );
+        } else {
+          toast.success('巡查记录已更新，关联问题判断不变');
+        }
+      } else {
+        await inspectionApi.create({
+          ...form,
+          restroom_id: Number(form.restroom_id),
+          inspect_time: form.inspect_time ? new Date(form.inspect_time).toISOString() : null,
+          items,
+        });
+        toast.success('巡查记录已提交');
+      }
       onSaved();
       onClose();
     } catch (err) {
@@ -84,7 +144,7 @@ export default function InspectionFormModal({ defaultRestroomId, onClose, onSave
 
   return (
     <Modal
-      title="新增保洁巡查记录"
+      title={isEdit ? '改分 / 编辑巡查记录' : '新增保洁巡查记录'}
       onClose={onClose}
       width={880}
       footer={
@@ -93,16 +153,23 @@ export default function InspectionFormModal({ defaultRestroomId, onClose, onSave
             取消
           </button>
           <button type="submit" form="inspection-form" className="btn btn-primary" disabled={saving}>
-            {saving ? '提交中…' : '提交巡查'}
+            {saving ? '提交中…' : isEdit ? '保存修改' : '提交巡查'}
           </button>
         </>
       }
     >
       {error ? <div className="alert alert-error">{error}</div> : null}
+      {isEdit && inspection.issue_count > 0 ? (
+        <div className="alert alert-info">
+          该巡查已登记 {inspection.issue_count} 条问题：改分或删除检查项后，待整改的问题会按新评分
+          自动调整或作废，已进入整改流程的问题保留不变。
+        </div>
+      ) : null}
       <form id="inspection-form" onSubmit={submit} className="form-grid">
         <Field label="被巡查公厕 *">
           <select
             value={form.restroom_id}
+            disabled={isEdit}
             onChange={(event) => setForm((prev) => ({ ...prev, restroom_id: event.target.value }))}
           >
             <option value="">请选择公厕</option>
@@ -147,6 +214,11 @@ export default function InspectionFormModal({ defaultRestroomId, onClose, onSave
           <StatusTag status={result} />
         </div>
         <div className="inline">
+          {missingCount > 0 ? (
+            <button type="button" className="btn btn-sm" onClick={restoreMissingItems}>
+              补齐缺失检查项（{missingCount}）
+            </button>
+          ) : null}
           <button type="button" className="btn btn-sm" onClick={() => fillAll(10)}>
             全部满分
           </button>
@@ -159,7 +231,20 @@ export default function InspectionFormModal({ defaultRestroomId, onClose, onSave
       <div className="check-grid">
         {items.map((item, index) => (
           <div className={`check-item${item.score < 6 ? ' is-low' : ''}`} key={item.name}>
-            <div className="name">{item.name}</div>
+            <div className="name">
+              {item.name}
+              {items.length > 1 ? (
+                <button
+                  type="button"
+                  className="btn-link danger"
+                  style={{ marginLeft: 6, fontSize: 12 }}
+                  title="从本次巡查中删除该检查项"
+                  onClick={() => removeItem(index)}
+                >
+                  删除
+                </button>
+              ) : null}
+            </div>
             <div className="score-line">
               <input
                 type="range"

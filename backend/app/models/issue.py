@@ -23,6 +23,9 @@ class Issue(Base):
         ForeignKey("inspections.id", ondelete="SET NULL"), nullable=True, index=True,
         comment="关联巡查记录",
     )
+    check_item: Mapped[str | None] = mapped_column(
+        String(60), nullable=True, comment="来源检查项（巡查改分时据此联动）"
+    )
     title: Mapped[str] = mapped_column(String(120), comment="问题标题")
     description: Mapped[str] = mapped_column(Text, default="", comment="问题描述")
     category: Mapped[str] = mapped_column(

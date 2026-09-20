@@ -36,6 +36,9 @@ class IssueBase(BaseModel):
 class IssueCreate(IssueBase):
     restroom_id: int
     inspection_id: int | None = Field(default=None, description="关联的巡查记录")
+    check_item: str | None = Field(
+        default=None, max_length=60, description="来源检查项，巡查改分时据此联动"
+    )
     report_time: datetime | None = Field(default=None, description="上报时间，留空取当前时间")
     initial_remark: str | None = Field(default=None, max_length=500, description="上报说明")
 
@@ -66,6 +69,7 @@ class IssueOut(BaseModel):
     restroom_id: int
     restroom: RestroomBrief | None = None
     inspection_id: int | None = None
+    check_item: str | None = None
     title: str
     description: str
     category: str

@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.core.constants import (
     INSPECTION_CHECK_ITEMS,
+    ISSUE_CATEGORY_BY_CHECK_ITEM,
     IssueCategory,
     IssueSeverity,
     IssueStatus,
@@ -68,16 +69,7 @@ ISSUE_TEMPLATES = {
     ],
 }
 
-CATEGORY_BY_ITEM = {
-    "地面与台阶清洁": IssueCategory.CLEANING,
-    "便池蹲位清洁": IssueCategory.CLEANING,
-    "洗手台与镜面": IssueCategory.CLEANING,
-    "通风除臭": IssueCategory.ODOR,
-    "耗材补充": IssueCategory.CONSUMABLE,
-    "垃圾清运": IssueCategory.CLEANING,
-    "工具与标识摆放": IssueCategory.OTHER,
-    "墙面门窗卫生": IssueCategory.CLEANING,
-}
+CATEGORY_BY_ITEM = ISSUE_CATEGORY_BY_CHECK_ITEM
 
 
 def _build_items(rng: random.Random, quality: float) -> list[InspectionItem]:
@@ -177,6 +169,7 @@ def seed_database(db: Session, *, reset: bool = False) -> int:
             IssueCreate(
                 restroom_id=restroom_id,
                 inspection_id=inspection_id,
+                check_item=problem_item,
                 title=title,
                 description=f"巡查得分 {summary.score} 分（{summary.grade}），检查项「{problem_item}」不达标，请安排整改。",
                 category=category,

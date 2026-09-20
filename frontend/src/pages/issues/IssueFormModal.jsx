@@ -24,6 +24,7 @@ export default function IssueFormModal({
   const [form, setForm] = useState({
     restroom_id: defaultRestroomId ? Number(defaultRestroomId) : '',
     inspection_id: defaultInspectionId ? Number(defaultInspectionId) : '',
+    check_item: '',
     title: '',
     description: '',
     category: '保洁不到位',
@@ -73,6 +74,26 @@ export default function IssueFormModal({
   const setValue = (key) => (event) =>
     setForm((prev) => ({ ...prev, [key]: event.target.value }));
 
+  // 当前选中的巡查记录及其不达标检查项，用于登记「来源检查项」
+  const selectedInspection = inspections.find((item) => item.id === Number(form.inspection_id));
+  const problemItems = (selectedInspection?.items || []).filter((item) => item.score < 6);
+  const categoryByItem = dictionaries?.issue_category_by_check_item || {};
+
+  const onInspectionChange = (event) => {
+    const value = event.target.value;
+    // 换巡查记录后来源检查项失效，需要重新选择
+    setForm((prev) => ({ ...prev, inspection_id: value, check_item: '' }));
+  };
+
+  const onCheckItemChange = (event) => {
+    const value = event.target.value;
+    setForm((prev) => ({
+      ...prev,
+      check_item: value,
+      category: categoryByItem[value] ?? prev.category,
+    }));
+  };
+
   const submit = async (event) => {
     event.preventDefault();
     if (!form.restroom_id) {
@@ -90,6 +111,7 @@ export default function IssueFormModal({
         ...form,
         restroom_id: Number(form.restroom_id),
         inspection_id: form.inspection_id ? Number(form.inspection_id) : null,
+        check_item: form.inspection_id && form.check_item ? form.check_item : null,
         deadline: form.deadline ? new Date(form.deadline).toISOString() : null,
       });
       toast.success('问题已上报，进入待整改状态');
@@ -131,7 +153,7 @@ export default function IssueFormModal({
           </select>
         </Field>
         <Field label="关联巡查记录" hint="可不选，直接上报">
-          <select value={form.inspection_id} onChange={setValue('inspection_id')}>
+          <select value={form.inspection_id} onChange={onInspectionChange}>
             <option value="">不关联</option>
             {inspections.map((item) => (
               <option key={item.id} value={item.id}>
@@ -140,6 +162,27 @@ export default function IssueFormModal({
             ))}
           </select>
         </Field>
+        {form.inspection_id ? (
+          <Field
+            label="来源检查项"
+            hint={
+              problemItems.length
+                ? '选定后分类自动带出；巡查改分使该项达标时，本问题将自动作废'
+                : '该巡查无不达标项，可不选'
+            }
+          >
+            <select value={form.check_item} onChange={onCheckItemChange}>
+              <option value="">不指定</option>
+              {(problemItems.length ? problemItems : selectedInspection?.items || []).map(
+                (item) => (
+                  <option key={item.name} value={item.name}>
+                    {item.name}（{item.score} 分{item.score < 6 ? '，不达标' : ''}）
+                  </option>
+                ),
+              )}
+            </select>
+          </Field>
+        ) : null}
         <Field label="问题标题 *" full>
           <input value={form.title} onChange={setValue('title')} placeholder="如：地面污渍未及时清理" />
         </Field>

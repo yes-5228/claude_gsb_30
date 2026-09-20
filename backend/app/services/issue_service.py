@@ -6,6 +6,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.constants import (
+    INSPECTION_ITEM_PROBLEM_THRESHOLD,
+    INSPECTION_SYNC_ACTION_ADJUST,
+    INSPECTION_SYNC_ACTION_VOID,
+    INSPECTION_SYNC_OPERATOR,
+    ISSUE_CATEGORY_BY_CHECK_ITEM,
     ISSUE_TRANSITIONS,
     OPEN_ISSUE_STATUSES,
     TRANSITION_ACTIONS,
@@ -14,7 +19,7 @@ from app.core.constants import (
 from app.core.exceptions import DomainError, NotFoundError
 from app.models import Inspection, Issue, RectificationRecord, Restroom
 from app.schemas.issue import IssueCreate, IssueOut, IssueStatusUpdate, IssueUpdate
-from app.services import restroom_service
+from app.services import restroom_service, scoring
 
 SORTABLE_FIELDS = {
     "report_time": Issue.report_time,
@@ -142,6 +147,12 @@ def create_issue(db: Session, payload: IssueCreate) -> Issue:
             raise NotFoundError(f"巡查记录 {payload.inspection_id} 不存在")
         if inspection.restroom_id != payload.restroom_id:
             raise DomainError("关联的巡查记录与所选公厕不一致")
+        if payload.check_item:
+            item_names = {str(item.get("name", "")) for item in inspection.items or []}
+            if payload.check_item not in item_names:
+                raise DomainError(f"来源检查项「{payload.check_item}」不在该巡查记录的检查项中")
+    elif payload.check_item:
+        raise DomainError("未关联巡查记录时不能指定来源检查项")
 
     data = _values(payload.model_dump(exclude={"inspection_id", "report_time", "initial_remark"}))
     issue = Issue(
@@ -216,6 +227,103 @@ def change_status(db: Session, issue_id: int, payload: IssueStatusUpdate) -> Iss
     db.refresh(issue)
     restroom_service.touch(db, issue.restroom_id)
     return issue
+
+
+def sync_issues_for_inspection(
+    db: Session, inspection: Inspection, previous_items: list[dict]
+) -> dict[str, int]:
+    """巡查改分/删减检查项后，联动处理该巡查登记出的问题记录。
+
+    规则（仅重判「待整改」问题，已进入整改流程的一律保留）：
+    - 作废：来源检查项被删除，或改分后由不达标变为达标 -> 自动作废关闭；
+    - 调整：来源检查项仍不达标且得分变化 -> 按新分数重算严重程度并校准分类；
+    - 保留：来源检查项判断未变（得分未动、一直达标），或问题不是从检查项登记的。
+
+    只修改 ORM 对象并追加整改流水，不提交事务——由调用方与巡查更新一起提交，
+    任何一步失败都会整体回滚，不会留下改了一半的问题集合。
+    """
+    summary = {"kept": 0, "adjusted": 0, "voided": 0}
+    previous_scores = {
+        str(item.get("name", "")): float(item.get("score", 0)) for item in previous_items
+    }
+    current_scores = {
+        str(item.get("name", "")): float(item.get("score", 0)) for item in inspection.items or []
+    }
+
+    issues = list(db.scalars(select(Issue).where(Issue.inspection_id == inspection.id)))
+    for issue in issues:
+        if issue.status != IssueStatus.PENDING.value:
+            summary["kept"] += 1
+            continue
+        source = (issue.check_item or "").strip()
+        if not source:
+            summary["kept"] += 1
+            continue
+
+        new_score = current_scores.get(source)
+        old_score = previous_scores.get(source)
+        if new_score is None:
+            reason = f"检查项「{source}」已从本次巡查中删除"
+            void = True
+        elif new_score >= INSPECTION_ITEM_PROBLEM_THRESHOLD:
+            if old_score is not None and old_score >= INSPECTION_ITEM_PROBLEM_THRESHOLD:
+                # 改分前后都达标，判断未变，保留
+                summary["kept"] += 1
+                continue
+            reason = f"检查项「{source}」改分后为 {new_score:g} 分，已达标"
+            void = True
+        else:
+            void = False
+            reason = ""
+
+        if void:
+            issue.status = IssueStatus.CLOSED.value
+            issue.closed_at = datetime.now()
+            issue.records.append(
+                RectificationRecord(
+                    action=INSPECTION_SYNC_ACTION_VOID,
+                    from_status=IssueStatus.PENDING.value,
+                    to_status=IssueStatus.CLOSED.value,
+                    operator=INSPECTION_SYNC_OPERATOR,
+                    remark=f"巡查评价变更，{reason}，问题自动作废",
+                )
+            )
+            summary["voided"] += 1
+            continue
+
+        if old_score is not None and old_score == new_score:
+            # 来源检查项得分未变，问题判断依据不变，保留人工调整过的分类/程度
+            summary["kept"] += 1
+            continue
+        new_severity = scoring.severity_for_item_score(new_score)
+        new_category = ISSUE_CATEGORY_BY_CHECK_ITEM.get(source, issue.category)
+        new_category = new_category.value if hasattr(new_category, "value") else new_category
+        changes: list[str] = []
+        if new_severity != issue.severity:
+            changes.append(f"严重程度「{issue.severity}」调整为「{new_severity}」")
+            issue.severity = new_severity
+        if new_category != issue.category:
+            changes.append(f"分类「{issue.category}」校准为「{new_category}」")
+            issue.category = new_category
+        if not changes:
+            summary["kept"] += 1
+            continue
+        score_note = (
+            f"「{source}」得分 {old_score:g} → {new_score:g} 分"
+            if old_score is not None
+            else f"「{source}」得分 {new_score:g} 分"
+        )
+        issue.records.append(
+            RectificationRecord(
+                action=INSPECTION_SYNC_ACTION_ADJUST,
+                from_status=issue.status,
+                to_status=issue.status,
+                operator=INSPECTION_SYNC_OPERATOR,
+                remark=f"巡查评价变更，{score_note}，" + "；".join(changes),
+            )
+        )
+        summary["adjusted"] += 1
+    return summary
 
 
 def add_record(db: Session, issue_id: int, *, action: str, operator: str, remark: str | None) -> Issue:

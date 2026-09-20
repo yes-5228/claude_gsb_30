@@ -137,6 +137,7 @@ export default function IssueDetailPage() {
                     label: '关联巡查记录',
                     value: issue.inspection_id ? `#${issue.inspection_id}` : '无',
                   },
+                  { label: '来源检查项', value: issue.check_item || '无' },
                   { label: '闭环时间', value: formatDateTime(issue.closed_at) },
                   { label: '问题描述', value: issue.description || '无' },
                 ]}
